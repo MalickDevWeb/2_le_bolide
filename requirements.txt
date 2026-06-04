@@ -6,5 +6,6 @@ isort
 mypy
 fastapi
 uvicorn[standard]
+gunicorn
 pydantic>=2.0
 websockets
