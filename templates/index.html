@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Le Bolide - IoT Streaming</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --surface: #151b2b;
+            --accent: #00d2ff;
+            --accent-glow: rgba(0, 210, 255, 0.4);
+            --text-main: #ffffff;
+            --text-secondary: #94a3b8;
+        }
+        body {
+            margin: 0;
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        header {
+            padding: 1.5rem 3rem;
+            background: rgba(21, 27, 43, 0.8);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        header h1 { margin: 0; font-size: 1.5rem; display: flex; align-items: center; gap: 10px; }
+        .live-indicator {
+            width: 12px; height: 12px;
+            background-color: #ff3b30;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #ff3b30;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.5; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .status-badge {
+            background: rgba(0, 210, 255, 0.1);
+            color: var(--accent);
+            padding: 0.5rem 1.2rem;
+            border-radius: 50px;
+            border: 1px solid var(--accent-glow);
+            font-weight: 600;
+        }
+        main {
+            flex: 1;
+            padding: 3rem;
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 2rem;
+        }
+        .card {
+            background: var(--surface);
+            border-radius: 20px;
+            padding: 2rem;
+            border: 1px solid rgba(255,255,255,0.05);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+        .metric-title {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 1rem;
+        }
+        .metric-value {
+            font-size: 4rem;
+            font-weight: 700;
+            color: var(--accent);
+            text-shadow: 0 0 20px var(--accent-glow);
+            transition: transform 0.1s ease;
+        }
+        .chart-container {
+            background: var(--surface);
+            border-radius: 20px;
+            padding: 2rem;
+            border: 1px solid rgba(255,255,255,0.05);
+            position: relative;
+            height: 100%;
+            box-sizing: border-box;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1><div class="live-indicator"></div> 🏎️ Le Bolide - Télémétrie Temps Réel</h1>
+        <div class="status-badge" id="conn-status">Connexion WebSocket...</div>
+    </header>
+
+    <main>
+        <div class="card">
+            <div class="metric-title">Température Sonde</div>
+            <div class="metric-value" id="current-temp">--°C</div>
+            <p style="color:var(--text-secondary); margin-top:1.5rem; font-size:0.95rem; line-height: 1.5;">
+                Flux de données asynchrone reçu via <b>FastAPI WebSockets</b>.<br>
+                Traitement non bloquant via <b>uvloop</b>.
+            </p>
+        </div>
+        
+        <div class="chart-container">
+            <canvas id="iotChart"></canvas>
+        </div>
+    </main>
+
+    <script>
+        // Chart.js Setup
+        const ctx = document.getElementById('iotChart').getContext('2d');
+        
+        let gradient = ctx.createLinearGradient(0, 0, 0, 400);
+        gradient.addColorStop(0, 'rgba(0, 210, 255, 0.5)');
+        gradient.addColorStop(1, 'rgba(0, 210, 255, 0.0)');
+
+        const iotChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Sonde A1 (°C)',
+                    data: [],
+                    borderColor: '#00d2ff',
+                    borderWidth: 3,
+                    backgroundColor: gradient,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 0,
+                    pointHoverRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 },
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        grid: { color: 'rgba(255,255,255,0.05)' },
+                        ticks: { color: '#94a3b8' },
+                        min: 10, max: 100
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: '#94a3b8', maxTicksLimit: 10 }
+                    }
+                }
+            }
+        });
+
+        // WebSocket Connection
+        const clientId = Math.random().toString(36).substring(7);
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/stream/${clientId}`;
+        
+        const ws = new WebSocket(wsUrl);
+        const statusEl = document.getElementById('conn-status');
+        const tempEl = document.getElementById('current-temp');
+
+        ws.onopen = () => {
+            statusEl.textContent = '● Connecté (Asynchrone)';
+            statusEl.style.color = '#4ade80';
+            statusEl.style.borderColor = 'rgba(74, 222, 128, 0.4)';
+            statusEl.style.background = 'rgba(74, 222, 128, 0.1)';
+        };
+
+        ws.onclose = () => {
+            statusEl.textContent = '○ Déconnecté';
+            statusEl.style.color = '#f87171';
+            statusEl.style.borderColor = 'rgba(248, 113, 113, 0.4)';
+            statusEl.style.background = 'rgba(248, 113, 113, 0.1)';
+        };
+
+        const maxPoints = 40;
+
+        ws.onmessage = (event) => {
+            const payload = JSON.parse(event.data);
+            const value = payload.value;
+            
+            // Update Metric UI with micro-animation
+            tempEl.textContent = value.toFixed(1) + '°C';
+            tempEl.style.transform = 'scale(1.05)';
+            setTimeout(() => { tempEl.style.transform = 'scale(1)'; }, 100);
+
+            // Update Chart
+            const timeLabel = new Date().toLocaleTimeString('fr-FR', {second:'2-digit', minute:'2-digit', hour:'2-digit'});
+            
+            iotChart.data.labels.push(timeLabel);
+            iotChart.data.datasets[0].data.push(value);
+
+            if (iotChart.data.labels.length > maxPoints) {
+                iotChart.data.labels.shift();
+                iotChart.data.datasets[0].data.shift();
+            }
+            
+            iotChart.update();
+        };
+    </script>
+</body>
+</html>
