@@ -1,40 +1,61 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, ConfigDict
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-from typing import List
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi.responses import ORJSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from pydantic import BaseModel, ConfigDict, Field
+from typing import List, Dict
+import asyncio
+import logging
 
-app = FastAPI(title="Le Bolide", description="IoT Streaming Service")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-class Payload(BaseModel):
-    sensor_id: str
-    value: float
-    model_config = ConfigDict(strict=True)
+# Utilisation de ORJSONResponse pour des performances de sérialisation extrêmes
+app = FastAPI(title="Le Bolide", description="Microservice IoT Asynchrone", default_response_class=ORJSONResponse)
+
+# Middleware de compression pour minimiser la bande passante (Green IT)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+class SensorPayload(BaseModel):
+    sensor_id: str = Field(..., min_length=3, max_length=50)
+    value: float = Field(..., ge=-273.15, description="Température absolue minimum")
+    timestamp: int
+    
+    # Rejet strict des champs non déclarés pour éviter la surcharge mémoire
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: Dict[str, WebSocket] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, client_id: str):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections[client_id] = websocket
+        logger.info(f"Client {client_id} connecté. Total: {len(self.active_connections)}")
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+    def disconnect(self, client_id: str):
+        if client_id in self.active_connections:
+            del self.active_connections[client_id]
+            logger.info(f"Client {client_id} déconnecté.")
 
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            await connection.send_text(message)
+    async def broadcast(self, message: dict):
+        # Utilisation de asyncio.gather pour streamer en parallèle absolu
+        tasks = [connection.send_json(message) for connection in self.active_connections.values()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 manager = ConnectionManager()
 
-@app.websocket("/ws/stream")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+@app.websocket("/ws/stream/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    await manager.connect(websocket, client_id)
     try:
         while True:
-            data = await websocket.receive_text()
-            # Processing data asynchronously
-            await manager.broadcast(f"Processed: {data}")
+            data = await websocket.receive_json()
+            # Validation Pydantic "à la volée" et stricte
+            payload = SensorPayload(**data)
+            await manager.broadcast({"status": "processed", "data": payload.model_dump()})
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        manager.disconnect(client_id)
+    except Exception as e:
+        logger.error(f"Erreur WebSocket: {e}")
+        await websocket.close(code=1008)
