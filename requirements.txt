@@ -1,1 +1,10 @@
-pytest\npytest-cov\nruff\nblack\nisort\nmypy\nfastapi\nuvicorn\npydantic>=2.0\nsqlalchemy[asyncio]>=2.0\nasyncpg\ncelery\nredis\nstructlog\n
+pytest
+pytest-cov
+ruff
+black
+isort
+mypy
+fastapi
+uvicorn[standard]
+pydantic>=2.0
+websockets
