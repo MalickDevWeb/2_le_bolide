@@ -1,4 +1,4 @@
-# Multi-stage build for Green IT
+# Multi-stage build for Green IT (Numérique Responsable)
 FROM python:3.11-slim as builder
 
 WORKDIR /app
@@ -14,9 +14,10 @@ RUN pip install --no-cache /wheels/*
 
 COPY . .
 
-# Avoid running as root
-RUN useradd -m appuser
+# Sécurité : éviter l'exécution en root
+RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8000
-\nCMD sh -c "gunicorn app.main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8000}"\n
+
+CMD ["gunicorn", "app.main:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120"]
